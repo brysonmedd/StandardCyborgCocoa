@@ -33,6 +33,7 @@
 #import <StandardCyborgFusion/SCPointCloud.h>
 #import <StandardCyborgFusion/SCPointCloud+FileIO.h>
 #import <StandardCyborgFusion/SCPointCloud+Geometry.h>
+#import <StandardCyborgFusion/SCPointCloudMerging.h>
 #import <StandardCyborgFusion/SCPointCloud+Metal.h>
 #import <StandardCyborgFusion/SCPointCloud+SceneKit.h>
 #import <StandardCyborgFusion/SCReconstructionManager.h>
