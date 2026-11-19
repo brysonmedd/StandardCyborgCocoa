@@ -3,9 +3,34 @@ import CoreMotion
 import StandardCyborgFusion
 import UIKit
 
+/** How well the scanner is following the object, frame by frame. */
+@objc public enum ScanTrackingQuality: Int {
+    /** The new frame lined up well with the scan so far. */
+    case good
+    /** It lined up, but not confidently (e.g. moving fast, or little shape to lock onto). */
+    case poor
+    /** It could not line up; too many of these in a row ends the scan. */
+    case lost
+}
+
 @objc public protocol ScanningViewControllerDelegate: AnyObject {
     func scanningViewControllerDidCancel(_ controller: ScanningViewController)
     @objc optional func scanningViewController(_ controller: ScanningViewController, didScan pointCloud: SCPointCloud)
+
+    /** Scanning started (after the countdown). */
+    @objc optional func scanningViewControllerDidStartScanning(_ controller: ScanningViewController)
+
+    /** Called for every processed frame while scanning. `framesCaptured` counts frames that lined up. */
+    @objc optional func scanningViewController(_ controller: ScanningViewController,
+                                               didUpdateTracking quality: ScanTrackingQuality,
+                                               framesCaptured: Int)
+
+    /** Scanning stopped. `trackingLost` is true if it stopped because tracking was lost
+        (rather than the shutter being tapped). With `reason == .finished`, the partial
+        scan follows in `didScan`; with `.canceled`, too little was captured to keep. */
+    @objc optional func scanningViewController(_ controller: ScanningViewController,
+                                               didStopScanningWith reason: ScanningViewController.ScanningTerminationReason,
+                                               trackingLost: Bool)
 }
 
 /**
@@ -86,6 +111,7 @@ import UIKit
         _assimilatedFrameIndex = 0
         meshTexturing.reset()
         _startMotionUpdates()
+        delegate?.scanningViewControllerDidStartScanning?(self)
     }
 
     /// Feeds the phone's motion sensor to the reconstruction so the scan records gravity.
@@ -108,6 +134,10 @@ import UIKit
         _state = .default
         _latestViewMatrix = matrix_identity_float4x4
         _updateUI()
+
+        let trackingLost = _stoppingBecauseTrackingLost
+        _stoppingBecauseTrackingLost = false
+        delegate?.scanningViewController?(self, didStopScanningWith: reason, trackingLost: trackingLost)
         
         switch reason {
         case .canceled: ScanningHapticFeedbackEngine.shared.scanningCanceled()
@@ -308,6 +338,14 @@ import UIKit
         
         _latestViewMatrix = metadata.viewMatrix
         
+        let quality: ScanTrackingQuality
+        switch metadata.result {
+        case .succeeded: quality = .good
+        case .poorTracking: quality = .poor
+        default: quality = .lost
+        }
+        delegate?.scanningViewController?(self, didUpdateTracking: quality, framesCaptured: statistics.succeededCount)
+
         switch metadata.result {
         case .succeeded, .poorTracking:
             // Save off every nth frame
@@ -324,7 +362,8 @@ import UIKit
             
         case .failed:
             let assimilatedTooFewFrames = statistics.succeededCount < _failedScanShowPreviewMinFrameCount
-            
+
+            _stoppingBecauseTrackingLost = true
             stopScanning(reason: assimilatedTooFewFrames ? .canceled : .finished)
             
         case .lostTracking:
@@ -349,6 +388,7 @@ import UIKit
     private let _motionManager = CMMotionManager()
     private var _latestViewMatrix = matrix_identity_float4x4
     private var _assimilatedFrameIndex = 0
+    private var _stoppingBecauseTrackingLost = false
     
     private let _metalContainerView = UIView()
     private let _metalLayer = CAMetalLayer()
