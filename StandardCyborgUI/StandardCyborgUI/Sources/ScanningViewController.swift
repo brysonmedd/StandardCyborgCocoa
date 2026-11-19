@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMotion
 import StandardCyborgFusion
 import UIKit
 
@@ -84,12 +85,26 @@ import UIKit
         _state = .scanning
         _assimilatedFrameIndex = 0
         meshTexturing.reset()
+        _startMotionUpdates()
+    }
+
+    /// Feeds the phone's motion sensor to the reconstruction so the scan records gravity.
+    /// The scan's world space is the camera's space at the first frame, and the reconstruction
+    /// keeps the first gravity sample after a reset, so start this exactly when scanning starts.
+    private func _startMotionUpdates() {
+        guard _motionManager.isDeviceMotionAvailable else { return }
+        _motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
+        _motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+            guard let self, let motion, self._state == .scanning else { return }
+            self._reconstructionManager.accumulateDeviceMotion(motion)
+        }
     }
     
     /** Stops scanning immediately */
     @objc public func stopScanning(reason: ScanningTerminationReason) {
         guard _state == _State.scanning else { return }
-        
+
+        _motionManager.stopDeviceMotionUpdates()
         _state = .default
         _latestViewMatrix = matrix_identity_float4x4
         _updateUI()
@@ -331,6 +346,7 @@ import UIKit
     private lazy var _visualizationCommandQueue = _metalDevice.makeCommandQueue()!
     private lazy var _reconstructionManager = SCReconstructionManager(device: _metalDevice, commandQueue: _algorithmCommandQueue, maxThreadCount: _maxReconstructionThreadCount)
     private let _cameraManager = CameraManager()
+    private let _motionManager = CMMotionManager()
     private var _latestViewMatrix = matrix_identity_float4x4
     private var _assimilatedFrameIndex = 0
     

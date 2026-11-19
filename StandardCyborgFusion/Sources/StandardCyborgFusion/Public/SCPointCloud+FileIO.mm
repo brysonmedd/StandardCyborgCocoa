@@ -29,10 +29,11 @@ using namespace standard_cyborg;
 - (instancetype)initWithPLYPath:(NSString *)PLYPath normalizeNormals:(BOOL)normalizeNormals
 {
     Surfels surfels;
-    
-    if (PointCloudIO::ReadSurfelsFromPLYFile(surfels, [PLYPath UTF8String], normalizeNormals)) {
+    Eigen::Vector3f fileGravity(0.0f, -1.0f, 0.0f); // default if the file has no gravity element
+
+    if (PointCloudIO::ReadSurfelsFromPLYFile(surfels, [PLYPath UTF8String], normalizeNormals, &fileGravity)) {
         NSData *surfelData = [NSData dataWithBytes:surfels.data() length:surfels.size() * sizeof(Surfel)];
-        simd_float3 gravity = simd_make_float3(0.0f, -1.0f, 0.0f); // default gravity value.
+        simd_float3 gravity = simd_make_float3(fileGravity.x(), fileGravity.y(), fileGravity.z());
         self = [self initWithSurfelData:surfelData gravity:gravity];
     } else {
         self = nil;

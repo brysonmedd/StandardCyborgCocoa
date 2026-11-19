@@ -13,7 +13,7 @@
 
 #define PLY_LINE_LENGTH 128
 
-bool PointCloudIO::ReadSurfelsFromPLYFile(Surfels& surfels, std::string filename, bool normalizeNormals)
+bool PointCloudIO::ReadSurfelsFromPLYFile(Surfels& surfels, std::string filename, bool normalizeNormals, Eigen::Vector3f *gravity)
 {
     FILE *fileHandle = fopen(filename.c_str(), "r");
     if (fileHandle == NULL) { return false; }
@@ -24,11 +24,12 @@ bool PointCloudIO::ReadSurfelsFromPLYFile(Surfels& surfels, std::string filename
     memset(&line, 0, PLY_LINE_LENGTH);
     
     int vertexCount = 0;
+    bool hasGravityElement = false;
     bool flipNormals = true; // Due to a bug, normals were inverted until version 1.1.0
     bool unapplyGamma = false; // Due to a bug, gamma was not applied correctly until version 1.1.0
     Surfel surfel = {};
     float x, y, z, nx, ny, nz, r, g, b, surfelRadius;
-    
+
     while (fileHandle != NULL
            && !feof(fileHandle)
            && fgets(line, PLY_LINE_LENGTH, fileHandle))
@@ -38,7 +39,17 @@ bool PointCloudIO::ReadSurfelsFromPLYFile(Surfels& surfels, std::string filename
                 surfels.reserve(vertexCount);
             }
         }
-        else if (sscanf(line, "%f %f %f %f %f %f %f %f %f %f", &x, &y, &z, &nx, &ny, &nz, &r, &g, &b, &surfelRadius)) {
+        else if (strncmp(line, "element gravity ", strlen("element gravity ")) == 0) {
+            hasGravityElement = true;
+        }
+        else if (hasGravityElement
+                 && vertexCount > 0
+                 && (int)surfels.size() >= vertexCount
+                 && sscanf(line, "%f %f %f", &x, &y, &z) == 3) {
+            // The gravity element comes after all vertices (and the zero faces)
+            if (gravity != nullptr) { *gravity = Eigen::Vector3f(x, y, z); }
+        }
+        else if (sscanf(line, "%f %f %f %f %f %f %f %f %f %f", &x, &y, &z, &nx, &ny, &nz, &r, &g, &b, &surfelRadius) == 10) {
             if (flipNormals) {
                 nx = -nx;
                 ny = -ny;
@@ -108,8 +119,12 @@ bool PointCloudIO::WriteSurfelsToPLYFile(const Surfel* surfels,
     fprintf(file, "property float surfel_radius\n");
     fprintf(file, "element face 0\n");
     fprintf(file, "property list uchar int vertex_indices\n");
+    fprintf(file, "element gravity 1\n");
+    fprintf(file, "property float gravity_x\n");
+    fprintf(file, "property float gravity_y\n");
+    fprintf(file, "property float gravity_z\n");
     fprintf(file, "end_header\n");
-    
+
     for (size_t i = 0; i < surfelCount; ++i) {
         const Surfel &surfel = surfels[i];
         
@@ -129,7 +144,10 @@ bool PointCloudIO::WriteSurfelsToPLYFile(const Surfel* surfels,
                 surfelRadius
                 );
     }
-    
+
+    // Gravity element (one row), after the vertices and the zero faces
+    fprintf(file, "%f %f %f\n", gravity.x(), gravity.y(), gravity.z());
+
     fclose(file);
     
     return true;

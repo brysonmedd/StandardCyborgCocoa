@@ -35,10 +35,13 @@ public:
     static bool ReadSurfelsFromOBJFile(Surfels& surfels,
                                        std::string filename);
     
-    /** Assumes file has sRGB color space, and reads into linear color space */
+    /** Assumes file has sRGB color space, and reads into linear color space.
+        If `gravity` is non-null and the file has a gravity element, it is written there;
+        otherwise it is left unchanged. */
     static bool ReadSurfelsFromPLYFile(Surfels& surfels,
                                        std::string filename,
-                                       bool normalizeNormals = false);
+                                       bool normalizeNormals = false,
+                                       Eigen::Vector3f *gravity = nullptr);
     
     /** Assumes vertices are in linear color space, and writes to file in sRGB color space */
     static bool WriteVerticesToOBJFile(const Eigen::Matrix3Xf& vertices,

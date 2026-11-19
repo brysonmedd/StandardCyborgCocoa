@@ -447,7 +447,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reset
 {
     _finalized = NO;
-    
+
+    // Each scan gets its own gravity: the first motion sample after this reset.
+    _gravityEstimator.reset();
+
     dispatch_sync(_inputQueue, ^{
         _inputQueue_incomingFrameData = nil;
         _inputQueue_incomingFrameSequence = 0;
