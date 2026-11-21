@@ -155,6 +155,25 @@ static NSError *ModelError(NSString *message)
 - (NSInteger)triangleCount { return _triangleCount; }
 - (NSInteger)shapeComponentCount { return _componentCount; }
 
+- (NSData *)triangles
+{
+    return [NSData dataWithBytes:_triangles.data() length:_triangles.size() * sizeof(uint32_t)];
+}
+
+- (NSData *)verticesForShapeCoefficients:(NSData *)shapeCoefficients
+{
+    size_t n = std::min<size_t>(_componentCount, shapeCoefficients.length / sizeof(float));
+    std::vector<float> beta(n);
+    if (n > 0) { memcpy(beta.data(), shapeCoefficients.bytes, n * sizeof(float)); }
+    std::vector<Eigen::Vector3f> vertices = [self verticesForShape:beta];
+    NSMutableData *data = [NSMutableData dataWithLength:vertices.size() * 3 * sizeof(float)];
+    float *out = (float *)data.mutableBytes;
+    for (size_t v = 0; v < vertices.size(); ++v) {
+        out[3 * v] = vertices[v].x(); out[3 * v + 1] = vertices[v].y(); out[3 * v + 2] = vertices[v].z();
+    }
+    return data;
+}
+
 - (NSNumber *)expectedYawDegreesForLabel:(NSString *)label
 {
     // Model → scan turn about y. In a scan, the scanned side faces the camera (+z).

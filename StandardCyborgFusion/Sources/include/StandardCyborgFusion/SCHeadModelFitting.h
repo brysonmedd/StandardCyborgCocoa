@@ -28,6 +28,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger triangleCount;
 @property (nonatomic, readonly) NSInteger shapeComponentCount;
 
+/** The model's triangles: triangleCount × 3 uint32 vertex indices. */
+@property (nonatomic, readonly) NSData *triangles;
+
+/** The head for the given shape coefficients (float32, as in SCHeadFitResult.shapeCoefficients),
+    in the model's own head space: meters, y = up, z = out of the face. Returns
+    vertexCount × 3 float32 positions. Missing coefficients count as 0 (average). */
+- (NSData *)verticesForShapeCoefficients:(NSData *)shapeCoefficients NS_SWIFT_NAME(vertices(forShape:));
+
 /** The turn (degrees about the vertical axis, model → scan) expected for a scan of the
     given side: "front", "left", "right", "back". nil for anything else. */
 - (nullable NSNumber *)expectedYawDegreesForLabel:(NSString *)label NS_SWIFT_NAME(expectedYawDegrees(forLabel:));
