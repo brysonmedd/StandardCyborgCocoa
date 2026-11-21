@@ -93,4 +93,36 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/** The result of lining up a face mask (e.g. ARKit's face geometry) with a fitted head. */
+@interface SCFaceLineUpResult : NSObject
+
+/** Transform from the mask's space (face space) to the head's space. */
+@property (nonatomic, readonly) simd_float4x4 faceToHead;
+
+/** For each mask point: where it landed on the head's surface (N × 3 float32, head space),
+    and whether it was used (N uint8: 1 = matched the head's face, 0 = ignored). */
+@property (nonatomic, readonly) NSData *matchedHeadPoints;
+@property (nonatomic, readonly) NSData *matchedFlags;
+
+/** Root-mean-square distance between the used mask points and the head's surface (meters). */
+@property (nonatomic, readonly) float rmsError;
+/** How many mask points were used, and how many rounds the snapping took. */
+@property (nonatomic, readonly) NSInteger usedPointCount;
+@property (nonatomic, readonly) NSInteger iterations;
+
+@end
+
+@interface SCFaceLineUp : NSObject
+
+/** Snaps `facePoints` (N × 3 float32, meters, y = up, z = out of the face, e.g. ARKit's
+    face mesh in face-anchor space) onto the face of the head with shape `shapeCoefficients`.
+    Starts with no turn and the nose tips together, then repeats "find nearest, nudge" (rigid
+    ICP) on the face region only (no lips, eyes, ears, scalp or neck). Fast: call it anywhere. */
++ (SCFaceLineUpResult *)lineUpFacePoints:(NSData *)facePoints
+                                withHead:(SCHeadModel *)model
+                                   shape:(NSData *)shapeCoefficients
+    NS_SWIFT_NAME(lineUp(facePoints:head:shape:));
+
+@end
+
 NS_ASSUME_NONNULL_END
