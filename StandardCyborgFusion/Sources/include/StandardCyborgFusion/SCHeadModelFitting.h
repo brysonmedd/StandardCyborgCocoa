@@ -136,6 +136,16 @@ typedef NS_ENUM(uint8_t, SCHeadRegion) {
     SCHeadRegionOther = 6,     // neck, boundary
 };
 
+/** The result of snapping measured points onto a head (SCHeadSurfaceCheck.snap). */
+@interface SCHeadSnapResult : NSObject
+/** Moves the points (head space) onto the head: corrected = correction × point. */
+@property (nonatomic, readonly) simd_float4x4 correction;
+/** Distance left between the used points and the head (meters, root-mean-square). */
+@property (nonatomic, readonly) float rmsError;
+@property (nonatomic, readonly) NSInteger usedPointCount;
+@property (nonatomic, readonly) NSInteger iterations;
+@end
+
 /** Distances from measured points to a fixed head's surface. */
 @interface SCHeadSurfaceCheck : NSObject
 
@@ -150,6 +160,15 @@ typedef NS_ENUM(uint8_t, SCHeadRegion) {
             distances:(NSMutableData *)distances
               regions:(NSMutableData *)regions
     NS_SWIFT_NAME(measure(points:gate:distances:regions:));
+
+/** Snaps points (head space, N × 3 float32) onto the head's firm, hair-free parts (face
+    without lips and eyes, nose, ears) with a rigid "find nearest, nudge, repeat".
+    Used to correct a tracked head pose with measured depth. */
+- (SCHeadSnapResult *)snapPoints:(NSData *)points
+                       startGate:(float)startGate
+                         endGate:(float)endGate
+                      iterations:(NSInteger)iterations
+    NS_SWIFT_NAME(snap(points:startGate:endGate:iterations:));
 
 @end
 

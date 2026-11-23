@@ -564,6 +564,74 @@ NSData *floatData(const std::vector<float>& values)
 
 @end
 
+// MARK: - Rigid snap (shared by the face line-up and the live depth correction)
+
+namespace {
+
+static const float kSnapStopShift = 0.0001f;  // stop when a round moves less than 0.1 mm…
+static const float kSnapStopAngle = 0.0002f;  // …and turns less than ~0.01°
+
+/** Moves `points` (by placement p) onto the indexed head vertices: "find nearest, nudge,
+    repeat" (point-to-plane rigid ICP with Tukey weights). The gate (how far apart a pair
+    may be) narrows from startGate to endGate over the first half of the rounds; after that
+    it stops once a round barely moves. Returns the number of rounds. */
+int rigidSnap(const std::vector<Eigen::Vector3f>& points,
+              const std::vector<Eigen::Vector3f>& vertices,
+              const std::vector<Eigen::Vector3f>& normals,
+              const VertexIndex& index,
+              float startGate, float endGate, int iterations, Placement& p)
+{
+    int iteration = 0;
+    for (; iteration < iterations; ++iteration) {
+        float fraction = std::min(1.0f, (float)iteration / (float)std::max(1, iterations / 2));
+        float gate = startGate + (endGate - startGate) * fraction;
+
+        Eigen::Matrix<double, 6, 6> A = Eigen::Matrix<double, 6, 6>::Zero();
+        Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Zero();
+        int used = 0;
+        for (const auto& point : points) {
+            Eigen::Vector3f q = p.R * point + p.t;
+            int v = index.nearest(q);
+            float distanceSquared = (q - vertices[v]).squaredNorm();
+            if (distanceSquared > gate * gate) { continue; }
+            const Eigen::Vector3f& n = normals[v];
+            float u = 1.0f - distanceSquared / (gate * gate);
+            double w = (double)(u * u);
+            // r = n · (q + ω × q + τ - vertex): derivative is [q × n, n]
+            Eigen::Matrix<double, 6, 1> J;
+            J << q.cross(n).cast<double>(), n.cast<double>();
+            double r = n.dot(q - vertices[v]);
+            A += w * J * J.transpose();
+            b -= w * J * r;
+            ++used;
+        }
+        if (used < 30) { break; }
+        for (int d = 0; d < 6; ++d) { A(d, d) += 1e-9; }
+        Eigen::Matrix<double, 6, 1> x = A.ldlt().solve(b);
+        Eigen::Vector3d omega = x.segment<3>(0);
+        Eigen::Vector3f tau = x.segment<3>(3).cast<float>();
+        double angle = omega.norm();
+        Eigen::Matrix3f dR = Eigen::Matrix3f::Identity();
+        if (angle > 1e-12) { dR = Eigen::AngleAxisd(angle, omega / angle).toRotationMatrix().cast<float>(); }
+        p.R = dR * p.R;
+        p.t = dR * p.t + tau;
+        if (fraction >= 1.0f && tau.norm() < kSnapStopShift && angle < kSnapStopAngle) { ++iteration; break; }
+    }
+    return iteration;
+}
+
+simd_float4x4 toSimdMatrix(const Placement& p)
+{
+    simd_float4x4 m = matrix_identity_float4x4;
+    for (int c = 0; c < 3; ++c) {
+        m.columns[c] = simd_make_float4(p.R(0, c), p.R(1, c), p.R(2, c), 0);
+    }
+    m.columns[3] = simd_make_float4(p.t.x(), p.t.y(), p.t.z(), 1);
+    return m;
+}
+
+} // namespace
+
 // MARK: - Face line-up
 
 @interface SCFaceLineUpResult ()
@@ -581,8 +649,6 @@ NSData *floatData(const std::vector<float>& values)
 static const int   kLineUpIterations = 40;
 static const float kLineUpStartGate = 0.02f;   // first rounds: pairs up to 2 cm apart count
 static const float kLineUpEndGate = 0.006f;    // last rounds: only pairs within 6 mm
-static const float kLineUpStopShift = 0.0001f; // stop when a round moves less than 0.1 mm…
-static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
 
 @implementation SCFaceLineUp
 
@@ -624,44 +690,10 @@ static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
         p.t = headNose - maskNose;
     }
 
-    // Snap: find nearest, nudge, repeat (point-to-plane rigid ICP with Tukey weights)
-    int iteration = 0;
-    for (; iteration < kLineUpIterations && count > 0 && !index.ids.empty(); ++iteration) {
-        float fraction = std::min(1.0f, (float)iteration / (float)(kLineUpIterations / 2));
-        float gate = kLineUpStartGate + (kLineUpEndGate - kLineUpStartGate) * fraction;
-
-        Eigen::Matrix<double, 6, 6> A = Eigen::Matrix<double, 6, 6>::Zero();
-        Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Zero();
-        int used = 0;
-        for (size_t i = 0; i < count; ++i) {
-            Eigen::Vector3f q = p.R * mask[i] + p.t;
-            int v = index.nearest(q);
-            float distanceSquared = (q - vertices[v]).squaredNorm();
-            if (distanceSquared > gate * gate) { continue; }
-            const Eigen::Vector3f& n = normals[v];
-            float u = 1.0f - distanceSquared / (gate * gate);
-            double w = (double)(u * u);
-            // r = n · (q + ω × q + τ - vertex): derivative is [q × n, n]
-            Eigen::Matrix<double, 6, 1> J;
-            J << q.cross(n).cast<double>(), n.cast<double>();
-            double r = n.dot(q - vertices[v]);
-            A += w * J * J.transpose();
-            b -= w * J * r;
-            ++used;
-        }
-        if (used < 30) { break; }
-        for (int d = 0; d < 6; ++d) { A(d, d) += 1e-9; }
-        Eigen::Matrix<double, 6, 1> x = A.ldlt().solve(b);
-        Eigen::Vector3d omega = x.segment<3>(0);
-        Eigen::Vector3f tau = x.segment<3>(3).cast<float>();
-        double angle = omega.norm();
-        Eigen::Matrix3f dR = Eigen::Matrix3f::Identity();
-        if (angle > 1e-12) { dR = Eigen::AngleAxisd(angle, omega / angle).toRotationMatrix().cast<float>(); }
-        p.R = dR * p.R;
-        p.t = dR * p.t + tau;
-        // Keep going through the gate narrowing, then stop once it has settled
-        if (fraction >= 1.0f && tau.norm() < kLineUpStopShift && angle < kLineUpStopAngle) { ++iteration; break; }
-    }
+    // Snap: find nearest, nudge, repeat
+    int iteration = (count > 0 && !index.ids.empty())
+        ? rigidSnap(mask, vertices, normals, index, kLineUpStartGate, kLineUpEndGate, kLineUpIterations, p)
+        : 0;
 
     // Final matches: each mask point's closest spot on the head's face surface
     std::vector<float> matched(count * 3, 0.0f);
@@ -681,12 +713,7 @@ static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
         ++used;
     }
 
-    simd_float4x4 m = matrix_identity_float4x4;
-    for (int c = 0; c < 3; ++c) {
-        m.columns[c] = simd_make_float4(p.R(0, c), p.R(1, c), p.R(2, c), 0);
-    }
-    m.columns[3] = simd_make_float4(p.t.x(), p.t.y(), p.t.z(), 1);
-    result.faceToHead = m;
+    result.faceToHead = toSimdMatrix(p);
     result.matchedHeadPoints = floatData(matched);
     result.matchedFlags = [NSData dataWithBytes:flags.data() length:flags.size()];
     result.rmsError = used > 0 ? (float)std::sqrt(sum / used) : kLargeDistance;
@@ -699,11 +726,22 @@ static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
 
 // MARK: - Surface check
 
+@interface SCHeadSnapResult ()
+@property (nonatomic, readwrite) simd_float4x4 correction;
+@property (nonatomic, readwrite) float rmsError;
+@property (nonatomic, readwrite) NSInteger usedPointCount;
+@property (nonatomic, readwrite) NSInteger iterations;
+@end
+
+@implementation SCHeadSnapResult
+@end
+
 @implementation SCHeadSurfaceCheck {
     std::vector<Eigen::Vector3f> _vertices;
     std::vector<Eigen::Vector3f> _normals;
     std::vector<uint8_t> _regions;
     std::unique_ptr<VertexIndex> _index;
+    std::unique_ptr<VertexIndex> _snapIndex;   // firm, hair-free parts only
 }
 
 - (instancetype)initWithModel:(SCHeadModel *)model shape:(NSData *)shapeCoefficients
@@ -732,7 +770,53 @@ static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
         for (int v : model->_masks[name]) { if (v >= 0 && v < model->_vertexCount) { searchable[v] = false; } }
     }
     _index.reset(new VertexIndex(_vertices, searchable));
+
+    // Snap targets: face, nose and ears; not lips or eyes (they move), not the forehead,
+    // scalp or neck (hair and clothes cover them, and the forehead fit is pushed out by bangs)
+    std::vector<bool> firm(model->_vertexCount, false);
+    for (const char *name : { "face", "nose", "left_ear", "right_ear" }) {
+        for (int v : model->_masks[name]) { if (v >= 0 && v < model->_vertexCount) { firm[v] = true; } }
+    }
+    for (const char *name : { "lips", "eye_region", "left_eyeball", "right_eyeball", "forehead",
+                              "scalp", "neck", "boundary" }) {
+        for (int v : model->_masks[name]) { if (v >= 0 && v < model->_vertexCount) { firm[v] = false; } }
+    }
+    _snapIndex.reset(new VertexIndex(_vertices, firm));
     return self;
+}
+
+- (SCHeadSnapResult *)snapPoints:(NSData *)points
+                       startGate:(float)startGate
+                         endGate:(float)endGate
+                      iterations:(NSInteger)iterations
+{
+    size_t count = points.length / (3 * sizeof(float));
+    const float *raw = (const float *)points.bytes;
+    std::vector<Eigen::Vector3f> cloud(count);
+    for (size_t i = 0; i < count; ++i) { cloud[i] = Eigen::Vector3f(raw[3 * i], raw[3 * i + 1], raw[3 * i + 2]); }
+
+    Placement p;
+    int rounds = (count > 0 && !_snapIndex->ids.empty())
+        ? rigidSnap(cloud, _vertices, _normals, *_snapIndex, startGate, endGate, (int)iterations, p)
+        : 0;
+
+    double sum = 0;
+    int used = 0;
+    for (const auto& point : cloud) {
+        if (_snapIndex->ids.empty()) { break; }
+        Eigen::Vector3f q = p.R * point + p.t;
+        int v = _snapIndex->nearest(q);
+        if ((q - _vertices[v]).norm() > endGate) { continue; }
+        float d = _normals[v].dot(q - _vertices[v]);
+        sum += d * d;
+        ++used;
+    }
+    SCHeadSnapResult *result = [[SCHeadSnapResult alloc] init];
+    result.correction = toSimdMatrix(p);
+    result.rmsError = used > 0 ? (float)std::sqrt(sum / used) : kLargeDistance;
+    result.usedPointCount = used;
+    result.iterations = rounds;
+    return result;
 }
 
 - (void)measurePoints:(NSData *)points
