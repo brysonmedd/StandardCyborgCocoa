@@ -696,3 +696,63 @@ static const float kLineUpStopAngle = 0.0002f; // …and turns less than ~0.01°
 }
 
 @end
+
+// MARK: - Surface check
+
+@implementation SCHeadSurfaceCheck {
+    std::vector<Eigen::Vector3f> _vertices;
+    std::vector<Eigen::Vector3f> _normals;
+    std::vector<uint8_t> _regions;
+    std::unique_ptr<VertexIndex> _index;
+}
+
+- (instancetype)initWithModel:(SCHeadModel *)model shape:(NSData *)shapeCoefficients
+{
+    self = [super init];
+    if (!self) { return nil; }
+    size_t k = std::min<size_t>(model->_componentCount, shapeCoefficients.length / sizeof(float));
+    std::vector<float> beta(k);
+    if (k > 0) { memcpy(beta.data(), shapeCoefficients.bytes, k * sizeof(float)); }
+    _vertices = [model verticesForShape:beta];
+    _normals = [model normalsForVertices:_vertices];
+
+    _regions.assign(model->_vertexCount, SCHeadRegionOther);
+    auto label = [&](const char *name, SCHeadRegion region) {
+        for (int v : model->_masks[name]) { if (v >= 0 && v < model->_vertexCount) { _regions[v] = region; } }
+    };
+    label("scalp", SCHeadRegionScalp);
+    label("face", SCHeadRegionFace);
+    label("forehead", SCHeadRegionForehead);
+    label("left_ear", SCHeadRegionLeftEar);
+    label("right_ear", SCHeadRegionRightEar);
+
+    // Eyeballs sit inside the head; leave them out of the search
+    std::vector<bool> searchable(model->_vertexCount, true);
+    for (const char *name : { "left_eyeball", "right_eyeball" }) {
+        for (int v : model->_masks[name]) { if (v >= 0 && v < model->_vertexCount) { searchable[v] = false; } }
+    }
+    _index.reset(new VertexIndex(_vertices, searchable));
+    return self;
+}
+
+- (void)measurePoints:(NSData *)points
+                 gate:(float)gate
+            distances:(NSMutableData *)distances
+              regions:(NSMutableData *)regions
+{
+    size_t count = points.length / (3 * sizeof(float));
+    distances.length = count * sizeof(float);
+    regions.length = count;
+    const float *p = (const float *)points.bytes;
+    float *outDistance = (float *)distances.mutableBytes;
+    uint8_t *outRegion = (uint8_t *)regions.mutableBytes;
+    for (size_t i = 0; i < count; ++i) {
+        Eigen::Vector3f q(p[3 * i], p[3 * i + 1], p[3 * i + 2]);
+        int v = _index->nearest(q);
+        Eigen::Vector3f offset = q - _vertices[v];
+        outDistance[i] = _normals[v].dot(offset);
+        outRegion[i] = offset.norm() > gate ? (uint8_t)SCHeadRegionNone : _regions[v];
+    }
+}
+
+@end

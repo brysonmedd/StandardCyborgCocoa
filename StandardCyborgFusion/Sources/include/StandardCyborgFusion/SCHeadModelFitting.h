@@ -125,4 +125,32 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/** Head regions reported by SCHeadSurfaceCheck. */
+typedef NS_ENUM(uint8_t, SCHeadRegion) {
+    SCHeadRegionNone = 0,      // farther than the gate from the head (hair, background, hands)
+    SCHeadRegionFace = 1,
+    SCHeadRegionForehead = 2,
+    SCHeadRegionScalp = 3,
+    SCHeadRegionLeftEar = 4,   // the subject's own left
+    SCHeadRegionRightEar = 5,
+    SCHeadRegionOther = 6,     // neck, boundary
+};
+
+/** Distances from measured points to a fixed head's surface. */
+@interface SCHeadSurfaceCheck : NSObject
+
+/** Builds a fast nearest-point search over the head with shape `shapeCoefficients`. */
+- (instancetype)initWithModel:(SCHeadModel *)model shape:(NSData *)shapeCoefficients;
+
+/** For points in head space (N × 3 float32): fills `distances` (N float32, meters, signed:
+    positive = outside the head) and `regions` (N uint8 SCHeadRegion; None if the point is
+    farther than `gate` meters from the head). */
+- (void)measurePoints:(NSData *)points
+                 gate:(float)gate
+            distances:(NSMutableData *)distances
+              regions:(NSMutableData *)regions
+    NS_SWIFT_NAME(measure(points:gate:distances:regions:));
+
+@end
+
 NS_ASSUME_NONNULL_END
