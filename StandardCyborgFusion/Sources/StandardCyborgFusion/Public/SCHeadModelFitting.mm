@@ -8,14 +8,15 @@
 //  (the components are scaled so that β ~ N(0, 1) across real heads).
 //
 //  Steps:
-//   1. Stand the scan upright with its gravity and cut off the body below the neck
+//   1. Stand the scan upright with its gravity and cut off the body just below the chin
 //      (same as merging). The model is upright too (y = up, z = toward the face).
 //   2. Placement search: for several turns about the vertical axis, place the average
 //      head on the scan and run a short rigid ICP. Keep the best.
 //   3. Joint fit in stages: rigid + the first 10 components with a strong penalty,
 //      then 40, then all, each time relaxing the penalty. Each iteration matches scan
 //      points to the nearest model vertex and solves one Gauss-Newton step on the
-//      point-to-plane distances.
+//      point-to-plane distances. Points nearest the model's neck are skipped: the neck
+//      under the chin is in the scan, but the model's neck isn't fitted.
 //
 
 #import "SCHeadModelFitting.h"
@@ -60,6 +61,9 @@ static const Stage kStages[] = {
     std::vector<float> _shape;                 // [component][vertex][xyz]
     std::map<std::string, std::vector<int>> _masks;
     std::vector<bool> _usableForFitting;       // false for eyeballs and neck
+    std::vector<bool> _searchedForFitting;     // usable, plus the neck: scan points nearest the
+                                               // neck are found there and then skipped, instead
+                                               // of being forced onto the jaw
     std::vector<uint8_t> _region;              // 0 = other, 1 = scalp/forehead, 2 = face
     float _subjectLeftSign;                    // +1 if the subject's left is +x
 }
@@ -136,6 +140,10 @@ static NSError *ModelError(NSString *message)
     _usableForFitting.assign(_vertexCount, true);
     for (const char *name : { "left_eyeball", "right_eyeball", "neck", "boundary" }) {
         for (int v : _masks[name]) { if (v >= 0 && v < _vertexCount) { _usableForFitting[v] = false; } }
+    }
+    _searchedForFitting = _usableForFitting;
+    for (const char *name : { "neck", "boundary" }) {
+        for (int v : _masks[name]) { if (v >= 0 && v < _vertexCount) { _searchedForFitting[v] = true; } }
     }
     _region.assign(_vertexCount, 0);
     for (const char *name : { "scalp", "forehead" }) {
@@ -301,7 +309,7 @@ int step(SCHeadModel *model, const Cloud& scan, std::vector<float>& beta, int co
     std::vector<Eigen::Vector3f> vertices = [model verticesForShape:beta];
     std::vector<Eigen::Vector3f> placed = place(vertices, placement);
     std::vector<Eigen::Vector3f> normals = [model normalsForVertices:vertices];
-    VertexIndex index(placed, model->_usableForFitting);
+    VertexIndex index(placed, model->_searchedForFitting);
 
     const int unknowns = 6 + components;
     std::vector<int> rowsScan, rowsVertex;
@@ -311,6 +319,7 @@ int step(SCHeadModel *model, const Cloud& scan, std::vector<float>& beta, int co
     for (size_t i = 0; i < scan.positions.size(); ++i) {
         const Eigen::Vector3f& p = scan.positions[i];
         int v = index.nearest(p);
+        if (!model->_usableForFitting[v]) { continue; }  // on the neck: not fitted
         Eigen::Vector3f n = placement.R * normals[v];
         float distanceSquared = (placed[v] - p).squaredNorm();
         if (distanceSquared > gate * gate) { continue; }
@@ -375,11 +384,15 @@ void evaluate(SCHeadModel *model, const Cloud& scan, const std::vector<float>& b
               const Placement& placement, float& coverage, float& rms)
 {
     std::vector<Eigen::Vector3f> placed = place([model verticesForShape:beta], placement);
-    VertexIndex index(placed, model->_usableForFitting);
+    VertexIndex index(placed, model->_searchedForFitting);
     size_t close = 0;
     double sum = 0;
     for (const auto& p : scan.positions) {
-        float d = (placed[index.nearest(p)] - p).norm();
+        int v = index.nearest(p);
+        // Points on the model's neck count as not covered, so a placement can't score well
+        // by putting scan points there.
+        if (!model->_usableForFitting[v]) { continue; }
+        float d = (placed[v] - p).norm();
         if (d < kCoverageDistance) { ++close; sum += d * d; }
     }
     coverage = scan.positions.empty() ? 0 : (float)close / (float)scan.positions.size();
@@ -433,10 +446,10 @@ NSData *floatData(const std::vector<float>& values)
 {
     SCHeadFitResult *result = [[SCHeadFitResult alloc] init];
 
-    // 1. Upright scan, body cut off
+    // 1. Upright scan, body cut off just below the chin (found from the face's side profile)
     Eigen::Matrix4f upright = uprightTransform([scan gravity]);
     float cutDepth = 0;
-    Cloud head = withoutBody(sampleCloud(scan, upright, 200000), cutDepth);
+    Cloud head = headOnly(sampleCloud(scan, upright, 200000), cutDepth);
     Cloud fitCloud = pickByNormals(head, kFitSampleCount);
     Cloud evalCloud;  // evenly spaced sample of the head points, for reporting
     {
@@ -497,14 +510,16 @@ NSData *floatData(const std::vector<float>& values)
     std::vector<Eigen::Vector3f> vertices = [model verticesForShape:beta];
     std::vector<Eigen::Vector3f> placed = place(vertices, placement);
     std::vector<Eigen::Vector3f> normals = [model normalsForVertices:vertices];
-    VertexIndex index(placed, model->_usableForFitting);
+    VertexIndex index(placed, model->_searchedForFitting);
 
     std::vector<float> matched, scalp, face;
     std::vector<float> distances(evalCloud.positions.size(), NAN);
-    size_t covered = 0;
+    size_t covered = 0, headPoints = 0;
     for (size_t i = 0; i < evalCloud.positions.size(); ++i) {
         const Eigen::Vector3f& p = evalCloud.positions[i];
         int v = index.nearest(p);
+        if (!model->_usableForFitting[v]) { continue; }  // on the neck: not part of the fit
+        ++headPoints;
         Eigen::Vector3f n = placement.R * normals[v];
         float signedDistance = n.dot(p - placed[v]);
         float euclidean = (p - placed[v]).norm();
@@ -528,7 +543,7 @@ NSData *floatData(const std::vector<float>& values)
     std::vector<float> sorted = matched;
     result.medianError = sorted.empty() ? NAN : percentile(sorted, 0.5f);
     result.p90Error = sorted.empty() ? NAN : percentile(sorted, 0.9f);
-    result.coverage = evalCloud.positions.empty() ? 0 : (float)covered / (float)evalCloud.positions.size();
+    result.coverage = headPoints == 0 ? 0 : (float)covered / (float)headPoints;
 
     Eigen::Matrix4f placementMatrix = Eigen::Matrix4f::Identity();
     placementMatrix.block<3, 3>(0, 0) = placement.R;

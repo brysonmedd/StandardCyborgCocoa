@@ -62,7 +62,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) float scalpRmsError;
 @property (nonatomic, readonly) float faceRmsError;
 
-/** Fraction (0–1) of the scan's head points within 1 cm of the fitted surface. */
+/** Fraction (0–1) of the scan's head points within 1 cm of the fitted surface. Points
+    nearest the model's neck aren't head points: they're left out of the fit and of all
+    these numbers (their scanDistances are NaN). */
 @property (nonatomic, readonly) float coverage;
 
 /** Chosen turn about the vertical axis (model → scan, degrees 0–360). */
